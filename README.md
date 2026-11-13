@@ -1,2 +1,2 @@
 # PROJECT-ARES
-WELL LOOK AT THE TITLE ULL UNDERSTAND
+An astronaut trainer designed for kids!
