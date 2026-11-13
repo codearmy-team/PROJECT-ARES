@@ -481,9 +481,23 @@ const _ls=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 // ---- local AI: Ollama (Llama 3.2). Everything has a built-in fallback, so the game never waits on a dead link. ----
 const OLL_URL=(_ls('ares_ollama')||'http://localhost:11434').replace(/\/+$/,'');
 let OLL_MODEL=_ls('ares_model')||'llama3.2';
+const GEM_KEY=(_ls('ares_gemini')||'').trim();
+const GEM_MODEL=(_ls('ares_gemini_model')||'gemini-2.5-flash').trim();
+let GEM_ON=false; // set true only after the key has been verified at startup
 const AI={on:false};
 const OLL_OPT={num_ctx:2048,top_k:40,top_p:.9,repeat_penalty:1.1};
+function llmGemini(prompt,o){ o=o||{};
+  const ctl=new AbortController(), tm=setTimeout(()=>ctl.abort(),o.timeout||12000);
+  const gc={temperature:o.temp==null?.7:o.temp,maxOutputTokens:o.max||200};
+  if(o.json!==false)gc.responseMimeType='application/json';
+  if(/2\.5-flash/.test(GEM_MODEL))gc.thinkingConfig={thinkingBudget:0}; else gc.maxOutputTokens=Math.max(gc.maxOutputTokens*4,1024);
+  return fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(GEM_MODEL)+':generateContent',
+    {method:'POST',signal:ctl.signal,headers:{'Content-Type':'application/json','x-goog-api-key':GEM_KEY},
+     body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:gc})})
+   .then(r=>{ if(!r.ok)throw new Error('http '+r.status); return r.json(); })
+   .then(d=>{ clearTimeout(tm); const p=(((d.candidates||[])[0]||{}).content||{}).parts||[]; return p.map(x=>x.text||'').join('').trim(); },e=>{ clearTimeout(tm); throw e; }); }
 function llm(prompt,o){ o=o||{};
+  if(GEM_ON)return llmGemini(prompt,o);
   const ctl=new AbortController(), tm=setTimeout(()=>ctl.abort(),o.timeout||12000);
   const body={model:OLL_MODEL,prompt:prompt,stream:false,keep_alive:'30m',options:Object.assign({},OLL_OPT,{temperature:o.temp==null?.7:o.temp,num_predict:o.max||200})};
   if(o.json!==false)body.format='json';
@@ -493,6 +507,7 @@ function llm(prompt,o){ o=o||{};
 function llmJSON(prompt,o){ return llm(prompt,o).then(t=>{ t=t.replace(/^```(?:json)?/i,'').replace(/```$/,'').trim(); const a=t.indexOf('{'),b=t.lastIndexOf('}'); return JSON.parse(a>=0&&b>a?t.slice(a,b+1):t); }); }
 window.addEventListener('load',function(){
   const say=(m,c)=>{ try{ log(m,c); }catch(e){} };
+  function startOllama(){
   const c=new AbortController(), tm=setTimeout(()=>c.abort(),1500);
   fetch(OLL_URL+'/api/tags',{signal:c.signal}).then(r=>r.json()).then(d=>{ clearTimeout(tm);
     const names=(d.models||[]).map(m=>m.name);
@@ -500,7 +515,15 @@ window.addEventListener('load',function(){
       else { say('AI LINK: model "'+OLL_MODEL+'" is not installed in Ollama (run: ollama pull '+OLL_MODEL+'). Built-in generators engaged.','warn'); return; } }
     AI.on=true; say('AI LINK: '+OLL_MODEL+' online on this machine.','good');
     return fetch(OLL_URL+'/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:OLL_MODEL,prompt:'',stream:false,keep_alive:'30m',options:OLL_OPT})}); })
-  .catch(()=>{ clearTimeout(tm); say('AI LINK: Ollama not reachable at '+OLL_URL+'. Built-in generators engaged. (If this page is opened as a file, start Ollama with OLLAMA_ORIGINS=*)','warn'); }); });
+  .catch(()=>{ clearTimeout(tm); say('AI LINK: no AI reachable (Ollama not found at '+OLL_URL+'). Built-in generators engaged. Add a Gemini key in AI SETUP to enable AI.','warn'); });
+  }
+  if(GEM_KEY){
+    llmGemini('Reply with exactly this JSON: {"ok":true}',{max:20,timeout:9000,temp:0})
+      .then(()=>{ GEM_ON=true; AI.on=true; say('AI LINK: Gemini ('+GEM_MODEL+') online.','good'); })
+      .catch(e=>{ const m=String(e&&e.message||e); const why=/http 401/.test(m)?'key not accepted (401) - re-copy the full key from AI Studio':/http 403/.test(m)?'key blocked (403) - check it is allowed for the Gemini API':/http 400/.test(m)?'bad request (400) - check the model name':/http 404/.test(m)?'model not found (404) - check the model name':/http 429/.test(m)?'rate limit reached (429)':m;
+      say('AI LINK: Gemini failed: '+why+'. Trying Ollama...','warn'); startOllama(); });
+  } else startOllama();
+});
 const NASA_API_KEY = _ls('ares_nasa')||'DEMO_KEY';
 const SLOTS_PER_DECK = 6;
 
@@ -1022,13 +1045,16 @@ document.getElementById('pauseBtn').onclick=function(){ S.hold=!S.hold; this.tex
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&selUid!=null){ selUid=null; renderUnplaced(); renderShip(); document.getElementById('hint').textContent='Click a crate from UNPLACED CARGO, then click a slot.'; } });
 function setKeys(){
   aresDialog({title:'AI SETUP',cmd:'ai-setup --config',okText:'SAVE & RELOAD',
-    desc:'Leave a field blank to use its default.',
+    desc:'Gemini is used first if a key is set, otherwise local Ollama. Leave a field blank to use its default. Keys stay in this browser only.',
     fields:[
+      {label:'GEMINI API KEY (optional)',type:'password',value:_ls('ares_gemini')||'',placeholder:'AQ.… or AIza…'},
+      {label:'GEMINI MODEL',value:_ls('ares_gemini_model')||'gemini-2.5-flash',placeholder:'gemini-2.5-flash'},
       {label:'OLLAMA ADDRESS',value:_ls('ares_ollama')||'http://localhost:11434',placeholder:'http://localhost:11434'},
       {label:'OLLAMA MODEL',value:_ls('ares_model')||'llama3.2',placeholder:'llama3.2'},
       {label:'NASA API KEY (optional)',value:_ls('ares_nasa')||'',placeholder:'DEMO_KEY'}],
-    onSubmit:v=>{ try{ localStorage.setItem('ares_ollama',v[0].trim()); localStorage.setItem('ares_model',v[1].trim()); localStorage.setItem('ares_nasa',v[2].trim()); }catch(e){} location.reload(); }});
+    onSubmit:v=>{ try{ ['ares_gemini','ares_gemini_model','ares_ollama','ares_model','ares_nasa'].forEach((k,i)=>localStorage.setItem(k,v[i].trim())); }catch(e){} location.reload(); }});
 }
+
 // ================= IN-PAGE DIALOG (replaces browser prompt()/alert()) =================
 function aresDialog(o){
   const old=document.getElementById('aresDlg'); if(old)old.remove();
